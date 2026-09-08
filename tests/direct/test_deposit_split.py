@@ -350,3 +350,290 @@ def test_assess_unknown_case_reverts(direct_vm, direct_deploy, direct_owner):
 
     with direct_vm.expect_revert("case does not exist"):
         contract.assess_case(999)
+
+
+# ---------------------------------------------------------------------------
+# Consensus: validator agreement and conflict handling
+# ---------------------------------------------------------------------------
+
+
+def test_validator_agrees_with_same_evidence(direct_vm, direct_deploy, direct_owner):
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    assessment = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True}
+    register_case_mocks(direct_vm, assessment)
+    contract.assess_case(case_id)
+
+    # Same mocks still active -> an independent validator re-derives the
+    # same assessment and agrees.
+    assert direct_vm.run_validator() is True
+
+
+def test_validator_rejects_conflicting_classification(direct_vm, direct_deploy, direct_owner):
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True},
+    )
+    contract.assess_case(case_id)
+
+    # Swap the world: a validator now sees substantial damage instead.
+    direct_vm.clear_mocks()
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MAJOR_DAMAGE", "cost_band_bps": 8000, "evidence_ok": True},
+    )
+    assert direct_vm.run_validator() is False
+
+
+def test_validator_accepts_materially_consistent_band(direct_vm, direct_deploy, direct_owner):
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True},
+    )
+    contract.assess_case(case_id)
+
+    # 300 bps apart — within the 500 bps tolerance, same classification.
+    direct_vm.clear_mocks()
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1800, "evidence_ok": True},
+    )
+    assert direct_vm.run_validator() is True
+
+
+def test_validator_rejects_materially_different_band(direct_vm, direct_deploy, direct_owner):
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True},
+    )
+    contract.assess_case(case_id)
+
+    # 1000 bps apart — beyond tolerance even with the same classification.
+    direct_vm.clear_mocks()
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 2500, "evidence_ok": True},
+    )
+    assert direct_vm.run_validator() is False
+
+
+def test_validator_rejects_evidence_ok_mismatch(direct_vm, direct_deploy, direct_owner):
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True},
+    )
+    contract.assess_case(case_id)
+
+    # Leader saw usable evidence; validator could not verify anything.
+    direct_vm.clear_mocks()
+    register_case_mocks(
+        direct_vm,
+        {
+            "damage_class": "INSUFFICIENT_EVIDENCE",
+            "cost_band_bps": 0,
+            "evidence_ok": False,
+        },
+    )
+    assert direct_vm.run_validator() is False
+
+
+# ---------------------------------------------------------------------------
+# Production-readiness checks
+# ---------------------------------------------------------------------------
+
+
+def test_consensus_closures_are_picklable(direct_vm, direct_deploy, direct_owner):
+    """In production the run_nondet closures cross the WASM boundary via
+    cloudpickle. Enable pickle checking and run a full happy path."""
+    direct_vm.check_pickling = True
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(direct_vm, clean_assessment())
+    contract.assess_case(case_id)
+    assert contract.get_settlement(case_id)["outcome"] == "FULL_REFUND"
+
+
+def test_independent_cases_resolve_independently(direct_vm, direct_deploy, direct_owner):
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+
+    case_0 = create_case(contract)
+    case_1 = create_case(contract)
+    assert contract.get_case_count() == 2
+
+    register_case_mocks(direct_vm, clean_assessment())
+    contract.assess_case(case_0)
+
+    direct_vm.clear_mocks()
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True},
+    )
+    contract.assess_case(case_1)
+
+    assert contract.get_settlement(case_0)["outcome"] == "FULL_REFUND"
+    assert contract.get_settlement(case_1)["outcome"] == "DEDUCT"
+
+
+# ---------------------------------------------------------------------------
+# Additional assessment scenarios
+# ---------------------------------------------------------------------------
+
+
+def test_major_damage_moderate_band_deducts(direct_vm, direct_deploy, direct_owner):
+    """Major damage at 60% band with 100% cap → DEDUCT at 60%."""
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MAJOR_DAMAGE", "cost_band_bps": 6000, "evidence_ok": True},
+    )
+    contract.assess_case(case_id)
+
+    s = contract.get_settlement(case_id)
+    assert s["status"] == "RESOLVED"
+    assert s["outcome"] == "DEDUCT"
+    assert s["cost_band_bps"] == 6000
+    assert s["deduction"] == 60_000
+    assert s["tenant_refund"] == 40_000
+
+
+def test_no_damage_forces_zero_band(direct_vm, direct_deploy, direct_owner):
+    """NO_DAMAGE assessment always results in FULL_REFUND regardless of band."""
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "NO_DAMAGE", "cost_band_bps": 5000, "evidence_ok": True},
+    )
+    contract.assess_case(case_id)
+
+    s = contract.get_settlement(case_id)
+    assert s["outcome"] == "FULL_REFUND"
+    assert s["cost_band_bps"] == 0
+    assert s["deduction"] == 0
+
+
+def test_multiple_urls_evidence_aggregation(direct_vm, direct_deploy, direct_owner):
+    """Case with multiple evidence URLs per stage — all must resolve."""
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+
+    move_in_urls = [
+        "https://evidence.example/case-multi/move-in-1.html",
+        "https://evidence.example/case-multi/move-in-2.html",
+    ]
+    move_out_urls = [
+        "https://evidence.example/case-multi/move-out-1.html",
+        "https://evidence.example/case-multi/move-out-2.html",
+    ]
+
+    case_id = contract.create_case(
+        tenant="Tenant Alice",
+        landlord="Landlord Bob",
+        inventory_hash="0xinv-multi",
+        move_in_urls=move_in_urls,
+        move_out_urls=move_out_urls,
+        deposit_amount=DEPOSIT_AMOUNT,
+        max_deduction_bps=MAX_DEDUCTION_BPS,
+    )
+
+    for url in move_in_urls + move_out_urls:
+        direct_vm.mock_web(
+            rf".*{url.split('/')[-1]}$",
+            {"status": 200, "body": "Property in good condition."},
+        )
+    direct_vm.mock_llm(
+        r"You are an independent evidence assessor.*",
+        json.dumps({"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1200, "evidence_ok": True}),
+    )
+
+    contract.assess_case(case_id)
+
+    s = contract.get_settlement(case_id)
+    assert s["status"] == "RESOLVED"
+    assert s["outcome"] == "DEDUCT"
+    assert s["deduction"] == 12_000
+
+
+def test_http_error_status_fails_closed(direct_vm, direct_deploy, direct_owner):
+    """Evidence URL returns HTTP 500 → unfetched → REVIEW."""
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    direct_vm.mock_web(r".*move-in\.html$", {"status": 200, "body": "ok"})
+    direct_vm.mock_web(r".*move-out\.html$", {"status": 500, "body": ""})
+
+    contract.assess_case(case_id)
+
+    s = contract.get_settlement(case_id)
+    assert s["status"] == "REVIEW"
+    assert s["outcome"] == "REVIEW"
+    assert s["deduction"] == 0
+    assert s["evidence_ok"] is False
+
+
+def test_boundary_band_exactly_at_tolerance(direct_vm, direct_deploy, direct_owner):
+    """Validator band exactly 500 bps from leader → within tolerance, passes."""
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True},
+    )
+    contract.assess_case(case_id)
+
+    # Exactly at tolerance boundary.
+    direct_vm.clear_mocks()
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 2000, "evidence_ok": True},
+    )
+    assert direct_vm.run_validator() is True
+
+
+def test_boundary_band_beyond_tolerance(direct_vm, direct_deploy, direct_owner):
+    """Validator band 501 bps from leader → just outside tolerance, rejected."""
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True},
+    )
+    contract.assess_case(case_id)
+
+    direct_vm.clear_mocks()
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 2001, "evidence_ok": True},
+    )
+    assert direct_vm.run_validator() is False
