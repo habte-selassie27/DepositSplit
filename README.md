@@ -26,6 +26,74 @@ Read-only check:
 genlayer call 0x6C435f02C36302a6ca53Ddf55f1981E05f61b536 get_case_count
 ```
 
+## Live test walkthrough
+
+Evidence is hosted on Vercel as static HTML — the same pages validators
+fetch during consensus.
+
+### Evidence pages
+
+**Landing page** — links to both reports:
+
+![DepositSplit Evidence Host](Images/01-vercel-landing-page.png)
+
+**Move-in report** — clean condition, no damage:
+
+![Move-In Condition Report](Images/02-move-in-report.png)
+
+**Move-out report** — documented minor damage (hole + stained carpet):
+
+![Move-Out Condition Report](Images/03-move-out-damage-report.png)
+
+### CLI: create case + assess + read settlement
+
+Set network to studionet:
+
+```shell
+genlayer network set studionet
+```
+
+![Network set to studionet](Images/04-network-set.png)
+
+Create the case with the Vercel evidence URLs:
+
+```shell
+genlayer write 0x6C435f02C36302a6ca53Ddf55f1981E05f61b536 create_case --args "Tenant Alice" "Landlord Bob" "inventory-hash-demo" '["https://evidence-host.vercel.app/move-in.html"]' '["https://evidence-host.vercel.app/move-out-damage.html"]' 100000 10000
+```
+
+![create_case tx](Images/05-create-case.png)
+![Consensus — 5 agree](Images/06-create-case-consensus.png)
+![Case created, id 2](Images/07-create-case-result.png)
+
+Run the assessment — validators independently re-fetch the evidence:
+
+```shell
+genlayer write 0x6C435f02C36302a6ca53Ddf55f1981E05f61b536 assess_case --args 2
+```
+
+![assess_case tx](Images/08-assess-case.png)
+![Consensus — MAJORITY_AGREE](Images/09-assess-case-consensus.png)
+![Assessment accepted](Images/10-assess-case-result.png)
+
+Read the settlement:
+
+```shell
+genlayer call 0x6C435f02C36302a6ca53Ddf55f1981E05f61b536 get_settlement --args 2
+```
+
+![Settlement: MINOR_DAMAGE, DEDUCT, 15000/100000](Images/11-settlement-result.png)
+
+### Result
+
+| Field | Value |
+| --- | --- |
+| outcome | `DEDUCT` |
+| damage_class | `MINOR_DAMAGE` |
+| cost_band_bps | 1500 (15%) |
+| deduction | 15000 of 100000 |
+| tenant_refund | 85000 |
+| status | `RESOLVED` |
+
 ## What it does
 
 A landlord and tenant register a deposit case with:
