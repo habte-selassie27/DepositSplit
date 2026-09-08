@@ -1,0 +1,19 @@
+{
+  "python.analysis.typeCheckingMode": "off",
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportUndefinedVariable": "none",
+    "reportWildcardImportFromLibrary": "none",
+    "reportMissingImports": "none",
+    "reportGeneralClassIssues": "none"
+  },
+  "python.linting.pylintEnabled": true,
+  "python.linting.pylintArgs": [
+    "--disable=C0115,C0116,C0301,C0303,W0401,W0718,E0401,E0602"
+  ],
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/artifacts": true,
+    "**/.venv": true
+  }
+}
