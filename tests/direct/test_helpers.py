@@ -103,3 +103,46 @@ def test_normalize_rejects_non_int_band(direct_deploy):
         h._normalize_assessment(
             {"damage_class": "MINOR_DAMAGE", "cost_band_bps": "1500", "evidence_ok": True}
         )
+
+
+# ---------------------------------------------------------------------------
+# _assessments_agree — the explicit semantic equivalence principle
+# ---------------------------------------------------------------------------
+
+
+def test_agree_on_identical_assessments(direct_deploy):
+    h = load_helpers(direct_deploy)
+    a = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True}
+    assert h._assessments_agree(a, dict(a)) is True
+
+
+def test_agree_within_cost_band_tolerance(direct_deploy):
+    h = load_helpers(direct_deploy)
+    leader = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True}
+    validator = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1800, "evidence_ok": True}
+    assert h._assessments_agree(leader, validator) is True
+
+
+def test_disagree_beyond_cost_band_tolerance(direct_deploy):
+    h = load_helpers(direct_deploy)
+    leader = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True}
+    validator = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 2500, "evidence_ok": True}
+    assert h._assessments_agree(leader, validator) is False
+
+
+def test_disagree_on_damage_class(direct_deploy):
+    h = load_helpers(direct_deploy)
+    leader = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True}
+    validator = {"damage_class": "MAJOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True}
+    assert h._assessments_agree(leader, validator) is False
+
+
+def test_disagree_on_evidence_ok(direct_deploy):
+    h = load_helpers(direct_deploy)
+    leader = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True}
+    validator = {
+        "damage_class": "INSUFFICIENT_EVIDENCE",
+        "cost_band_bps": 0,
+        "evidence_ok": False,
+    }
+    assert h._assessments_agree(leader, validator) is False
