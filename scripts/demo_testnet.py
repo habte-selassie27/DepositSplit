@@ -64,3 +64,101 @@ def deploy(client, account) -> str:
         sys.exit(1)
     print(f"  Contract address: {address}")
     return address
+
+
+def create_case(client, account, address, move_in_urls, move_out_urls, label: str) -> int:
+    print(f"Creating case: {label}...")
+    tx_hash = client.write_contract(
+        address=address,
+        account=account,
+        function_name="create_case",
+        args=[
+            "Tenant Alice",
+            "Landlord Bob",
+            "inventory-hash-demo",
+            move_in_urls,
+            move_out_urls,
+            DEPOSIT_AMOUNT,
+            MAX_DEDUCTION_BPS,
+        ],
+    )
+    wait_and_check(client, tx_hash, f"create_case ({label})")
+    case_id = client.read_contract(address=address, function_name="get_case_count", args=[]) - 1
+    print(f"  case_id = {case_id}")
+    return case_id
+
+
+def assess(client, account, address, case_id: int, label: str) -> dict:
+    print(f"Assessing case {case_id} ({label}) — validators fetch evidence...")
+    tx_hash = client.write_contract(
+        address=address,
+        account=account,
+        function_name="assess_case",
+        args=[case_id],
+    )
+    wait_and_check(client, tx_hash, f"assess_case ({label})")
+    settlement = client.read_contract(
+        address=address, function_name="get_settlement", args=[case_id]
+    )
+    print(f"  settlement: {settlement}")
+    return settlement
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--chain", choices=["bradbury", "studionet", "localnet"], default="bradbury"
+    )
+    parser.add_argument("--address", help="reuse an already-deployed contract address")
+    parser.add_argument("--move-in-url", required=True, help="reachable move-in evidence page")
+    parser.add_argument(
+        "--move-out-url", required=True, help="reachable clean move-out evidence page"
+    )
+    parser.add_argument(
+        "--damaged-move-out-url",
+        help="reachable damaged move-out evidence page (defaults to --move-out-url)",
+    )
+    args = parser.parse_args()
+
+    chains = {
+        "bradbury": testnet_bradbury,
+        "studionet": studionet,
+        "localnet": localnet,
+    }
+    account = create_account()
+    client = create_client(chain=chains[args.chain], account=account)
+    print(f"Account: {account.address} (fund it from the network faucet if needed)")
+
+    if args.chain == "localnet":
+        client.fund_account(address=account.address, amount=10**18)
+
+    address = args.address or deploy(client, account)
+
+    damaged_move_out = args.damaged_move_out_url or args.move_out_url
+
+    # Case 1: clean evidence -> FULL_REFUND
+    case_clean = create_case(
+        client, account, address, [args.move_in_url], [args.move_out_url], "clean"
+    )
+    # Case 2: supported damage -> DEDUCT (bounded by max_deduction_bps)
+    case_damage = create_case(
+        client, account, address, [args.move_in_url], [damaged_move_out], "damage"
+    )
+    # Case 3: unreachable evidence -> REVIEW (fail closed)
+    case_broken = create_case(
+        client,
+        account,
+        address,
+        [args.move_in_url],
+        ["https://unreachable.invalid/move-out.html"],
+        "broken URL",
+    )
+
+    print()
+    assess(client, account, address, case_clean, "clean")
+    assess(client, account, address, case_damage, "damage")
+    assess(client, account, address, case_broken, "broken URL")
+
+
+if __name__ == "__main__":
+    main()
