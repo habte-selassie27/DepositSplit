@@ -329,3 +329,343 @@ class DepositSplit(gl.Contract):
         )
 
         return int(case_id)
+
+    # ------------------------------------------------------------------
+    # Assessment — the Intelligent Contract core
+    # ------------------------------------------------------------------
+
+    @gl.public.write
+    def assess_case(self, case_id: int) -> None:
+        """
+        Run the evidence assessment through GenLayer consensus and derive
+        the settlement deterministically.
+
+        Takes ONLY the case id. The caller cannot influence the verdict.
+        """
+        if u256(case_id) not in self.cases:
+            raise gl.vm.UserError("case does not exist")
+        case = self.cases[u256(case_id)]
+        if case.status != STATUS_OPEN:
+            raise gl.vm.UserError("case is not open for assessment")
+
+        # Copy plain values out of storage BEFORE the non-deterministic
+        # block. Closures crossing the consensus boundary must not capture
+        # storage handles — only picklable plain data.
+        move_in_urls = [u for u in case.move_in_urls]
+        move_out_urls = [u for u in case.move_out_urls]
+        inventory_hash = case.inventory_hash
+
+        def leader_fn() -> str:
+            # ---------------------------------------------------------
+            # Non-deterministic block — leader.
+            # Fetches the evidence from the web and evaluates it.
+            # Never raises: every failure normalizes to
+            # INSUFFICIENT_EVIDENCE so ambiguity fails closed instead of
+            # crashing consensus.
+            # ---------------------------------------------------------
+
+            def fetch_stage(urls: list) -> list:
+                evidence = []
+                for url in urls:
+                    entry = {"url": url, "fetched": False, "content": ""}
+                    try:
+                        text = gl.nondet.web.render(url, mode="text")
+                        entry["fetched"] = True
+                        entry["content"] = (text or "")[:MAX_EVIDENCE_CHARS_PER_URL]
+                    except Exception:
+                        # Unreachable / invalid URL stays unfetched.
+                        pass
+                    evidence.append(entry)
+                return evidence
+
+            def evaluate() -> dict:
+                move_in_evidence = fetch_stage(move_in_urls)
+                move_out_evidence = fetch_stage(move_out_urls)
+
+                # Mechanical evidence gate: every URL must have been
+                # fetched and at least one stage must carry real content.
+                all_fetched = all(e["fetched"] for e in move_in_evidence) and all(
+                    e["fetched"] for e in move_out_evidence
+                )
+                has_content = any(
+                    len(e["content"].strip()) > 0
+                    for e in move_in_evidence + move_out_evidence
+                )
+                if not (all_fetched and has_content):
+                    return {
+                        "damage_class": DAMAGE_INSUFFICIENT,
+                        "cost_band_bps": 0,
+                        "evidence_ok": False,
+                    }
+
+                prompt = f"""You are an independent evidence assessor for a residential tenancy deposit case.
+
+Inventory reference hash: {inventory_hash}
+
+=== MOVE-IN EVIDENCE (condition at start of tenancy) ===
+{json.dumps(move_in_evidence, sort_keys=True)}
+
+=== MOVE-OUT EVIDENCE (condition at end of tenancy) ===
+{json.dumps(move_out_evidence, sort_keys=True)}
+
+Compare the move-out evidence against the move-in evidence and classify the property condition.
+
+Return ONLY valid JSON with exactly these fields:
+{{
+  "damage_class": "NO_DAMAGE" | "NORMAL_WEAR" | "MINOR_DAMAGE" | "MAJOR_DAMAGE" | "INSUFFICIENT_EVIDENCE",
+  "cost_band_bps": <integer 0..10000>,
+  "evidence_ok": <true | false>
+}}
+
+Definitions:
+- NO_DAMAGE: move-out condition matches move-in evidence.
+- NORMAL_WEAR: ordinary deterioration consistent with normal use. NOT damage; cost_band_bps must be 0.
+- MINOR_DAMAGE: small, clearly evidenced damage beyond normal wear.
+- MAJOR_DAMAGE: substantial, clearly evidenced damage.
+- INSUFFICIENT_EVIDENCE: evidence is empty, contradictory, unrelated to the property, or too unclear to classify.
+
+Rules:
+- Base every conclusion ONLY on the supplied evidence. Never invent facts.
+- If you cannot reliably compare the two stages, set evidence_ok = false, damage_class = INSUFFICIENT_EVIDENCE, cost_band_bps = 0.
+- cost_band_bps is the share of the deposit reasonably attributable to SUPPORTED damage, in basis points (10000 = 100%).
+- Be conservative: never claim more damage than the evidence supports.
+"""
+                try:
+                    result = gl.nondet.exec_prompt(prompt, response_format="json")
+                    # Tolerate runners/mocks that hand back raw JSON text.
+                    if isinstance(result, str):
+                        result = json.loads(result)
+                except Exception:
+                    # Model failure -> fail closed.
+                    return {
+                        "damage_class": DAMAGE_INSUFFICIENT,
+                        "cost_band_bps": 0,
+                        "evidence_ok": False,
+                    }
+                try:
+                    return _normalize_assessment(result)
+                except Exception:
+                    # Invalid model output -> fail closed.
+                    return {
+                        "damage_class": DAMAGE_INSUFFICIENT,
+                        "cost_band_bps": 0,
+                        "evidence_ok": False,
+                    }
+
+            return _canonical(evaluate())
+
+        def validator_fn(leaders_res) -> bool:
+            # ---------------------------------------------------------
+            # Non-deterministic block — validator.
+            # Independently re-fetches and re-evaluates the SAME evidence
+            # and enforces the semantic equivalence principle against the
+            # leader's result. This comparison is explicit contract code,
+            # not an LLM judging itself.
+            # ---------------------------------------------------------
+            if not isinstance(leaders_res, gl.vm.Return):
+                return False
+
+            def fetch_stage(urls: list) -> list:
+                evidence = []
+                for url in urls:
+                    entry = {"url": url, "fetched": False, "content": ""}
+                    try:
+                        text = gl.nondet.web.render(url, mode="text")
+                        entry["fetched"] = True
+                        entry["content"] = (text or "")[:MAX_EVIDENCE_CHARS_PER_URL]
+                    except Exception:
+                        pass
+                    evidence.append(entry)
+                return evidence
+
+            def evaluate() -> dict:
+                move_in_evidence = fetch_stage(move_in_urls)
+                move_out_evidence = fetch_stage(move_out_urls)
+
+                all_fetched = all(e["fetched"] for e in move_in_evidence) and all(
+                    e["fetched"] for e in move_out_evidence
+                )
+                has_content = any(
+                    len(e["content"].strip()) > 0
+                    for e in move_in_evidence + move_out_evidence
+                )
+                if not (all_fetched and has_content):
+                    return {
+                        "damage_class": DAMAGE_INSUFFICIENT,
+                        "cost_band_bps": 0,
+                        "evidence_ok": False,
+                    }
+
+                prompt = f"""You are an independent evidence assessor for a residential tenancy deposit case.
+
+Inventory reference hash: {inventory_hash}
+
+=== MOVE-IN EVIDENCE (condition at start of tenancy) ===
+{json.dumps(move_in_evidence, sort_keys=True)}
+
+=== MOVE-OUT EVIDENCE (condition at end of tenancy) ===
+{json.dumps(move_out_evidence, sort_keys=True)}
+
+Compare the move-out evidence against the move-in evidence and classify the property condition.
+
+Return ONLY valid JSON with exactly these fields:
+{{
+  "damage_class": "NO_DAMAGE" | "NORMAL_WEAR" | "MINOR_DAMAGE" | "MAJOR_DAMAGE" | "INSUFFICIENT_EVIDENCE",
+  "cost_band_bps": <integer 0..10000>,
+  "evidence_ok": <true | false>
+}}
+
+Definitions:
+- NO_DAMAGE: move-out condition matches move-in evidence.
+- NORMAL_WEAR: ordinary deterioration consistent with normal use. NOT damage; cost_band_bps must be 0.
+- MINOR_DAMAGE: small, clearly evidenced damage beyond normal wear.
+- MAJOR_DAMAGE: substantial, clearly evidenced damage.
+- INSUFFICIENT_EVIDENCE: evidence is empty, contradictory, unrelated to the property, or too unclear to classify.
+
+Rules:
+- Base every conclusion ONLY on the supplied evidence. Never invent facts.
+- If you cannot reliably compare the two stages, set evidence_ok = false, damage_class = INSUFFICIENT_EVIDENCE, cost_band_bps = 0.
+- cost_band_bps is the share of the deposit reasonably attributable to SUPPORTED damage, in basis points (10000 = 100%).
+- Be conservative: never claim more damage than the evidence supports.
+"""
+                try:
+                    result = gl.nondet.exec_prompt(prompt, response_format="json")
+                    # Tolerate runners/mocks that hand back raw JSON text.
+                    if isinstance(result, str):
+                        result = json.loads(result)
+                except Exception:
+                    return {
+                        "damage_class": DAMAGE_INSUFFICIENT,
+                        "cost_band_bps": 0,
+                        "evidence_ok": False,
+                    }
+                try:
+                    return _normalize_assessment(result)
+                except Exception:
+                    return {
+                        "damage_class": DAMAGE_INSUFFICIENT,
+                        "cost_band_bps": 0,
+                        "evidence_ok": False,
+                    }
+
+            leader_assessment = _parse_assessment(leaders_res.calldata)
+            if leader_assessment is None:
+                return False
+            try:
+                leader_assessment = _normalize_assessment(leader_assessment)
+            except Exception:
+                return False
+
+            own_assessment = evaluate()
+            return _assessments_agree(leader_assessment, own_assessment)
+
+        # Consensus: leader result is accepted only when independent
+        # validators re-derive a semantically equivalent assessment.
+        # On validator disagreement the transaction reverts and the case
+        # stays OPEN — no settlement can be built on contested evidence.
+        result = gl.vm.run_nondet(leader_fn, validator_fn)
+
+        assessment = _parse_assessment(result)
+        if assessment is None:
+            self._enter_review(case, REVIEW_UNPARSABLE)
+            return
+
+        # Defensive re-validation of the consensus result before it is
+        # allowed anywhere near the money math.
+        try:
+            assessment = _normalize_assessment(assessment)
+        except Exception:
+            self._enter_review(case, REVIEW_UNPARSABLE)
+            return
+
+        if not assessment["evidence_ok"] or (
+            assessment["damage_class"] == DAMAGE_INSUFFICIENT
+        ):
+            # Fail closed: unresolved evidence is never a deduction.
+            self._enter_review(case, REVIEW_INSUFFICIENT_EVIDENCE, assessment)
+            return
+
+        settlement = _derive_settlement(
+            deposit_amount=int(case.deposit_amount),
+            damage_class=assessment["damage_class"],
+            cost_band_bps=assessment["cost_band_bps"],
+            max_deduction_bps=int(case.max_deduction_bps),
+        )
+
+        case.status = STATUS_RESOLVED
+        case.outcome = settlement["outcome"]
+        case.damage_class = settlement["damage_class"]
+        case.cost_band_bps = u256(settlement["cost_band_bps"])
+        case.deduction = u256(settlement["deduction"])
+        case.tenant_refund = u256(settlement["tenant_refund"])
+        case.evidence_ok = True
+        case.assessment = _canonical(assessment)
+
+    def _enter_review(self, case, reason: str, assessment: dict | None = None) -> None:
+        """
+        Fail-closed terminal state. No deduction is authorized; the
+        notional refund equals the full deposit pending human review.
+        """
+        case.status = STATUS_REVIEW
+        case.outcome = OUTCOME_REVIEW
+        if assessment is not None:
+            case.damage_class = assessment.get("damage_class", "")
+            case.evidence_ok = False
+        else:
+            case.damage_class = ""
+            case.evidence_ok = False
+        case.cost_band_bps = u256(0)
+        case.deduction = u256(0)
+        case.tenant_refund = case.deposit_amount
+        case.assessment = reason
+
+    # ------------------------------------------------------------------
+    # Views (deterministic reads)
+    # ------------------------------------------------------------------
+
+    @gl.public.view
+    def get_case(self, case_id: int) -> dict:
+        if u256(case_id) not in self.cases:
+            raise gl.vm.UserError("case does not exist")
+        c = self.cases[u256(case_id)]
+        return {
+            "case_id": int(case_id),
+            "tenant": c.tenant,
+            "landlord": c.landlord,
+            "inventory_hash": c.inventory_hash,
+            "created_by": c.created_by,
+            "move_in_urls": [u for u in c.move_in_urls],
+            "move_out_urls": [u for u in c.move_out_urls],
+            "deposit_amount": int(c.deposit_amount),
+            "max_deduction_bps": int(c.max_deduction_bps),
+            "status": c.status,
+            "outcome": c.outcome,
+            "damage_class": c.damage_class,
+            "cost_band_bps": int(c.cost_band_bps),
+            "deduction": int(c.deduction),
+            "tenant_refund": int(c.tenant_refund),
+            "evidence_ok": c.evidence_ok,
+            "assessment": c.assessment,
+        }
+
+    @gl.public.view
+    def get_settlement(self, case_id: int) -> dict:
+        if u256(case_id) not in self.cases:
+            raise gl.vm.UserError("case does not exist")
+        c = self.cases[u256(case_id)]
+        return {
+            "case_id": int(case_id),
+            "status": c.status,
+            "outcome": c.outcome,
+            "damage_class": c.damage_class,
+            "cost_band_bps": int(c.cost_band_bps),
+            "deposit_amount": int(c.deposit_amount),
+            "max_deduction_bps": int(c.max_deduction_bps),
+            "deduction": int(c.deduction),
+            "tenant_refund": int(c.tenant_refund),
+            "evidence_ok": c.evidence_ok,
+        }
+
+    @gl.public.view
+    def get_case_count(self) -> int:
+        return int(self.case_count)
