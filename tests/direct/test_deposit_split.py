@@ -194,3 +194,159 @@ def test_forfeit_on_full_band_supported_damage(direct_vm, direct_deploy, direct_
     assert s["outcome"] == "FORFEIT"
     assert s["deduction"] == DEPOSIT_AMOUNT
     assert s["tenant_refund"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed behavior
+# ---------------------------------------------------------------------------
+
+
+def test_unreachable_evidence_fails_closed(direct_vm, direct_deploy, direct_owner):
+    """Move-out URL is unreachable -> REVIEW, no deduction, full notional refund."""
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    # Only the move-in URL is mockable; the move-out fetch will fail.
+    direct_vm.mock_web(r".*move-in\.html$", {"status": 200, "body": "move-in ok"})
+
+    contract.assess_case(case_id)
+
+    s = contract.get_settlement(case_id)
+    assert s["status"] == "REVIEW"
+    assert s["outcome"] == "REVIEW"
+    assert s["deduction"] == 0
+    assert s["tenant_refund"] == DEPOSIT_AMOUNT
+    assert s["evidence_ok"] is False
+
+
+def test_insufficient_evidence_verdict_fails_closed(direct_vm, direct_deploy, direct_owner):
+    """Evidence reachable but the assessor cannot support a classification."""
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(
+        direct_vm,
+        {
+            "damage_class": "INSUFFICIENT_EVIDENCE",
+            "cost_band_bps": 0,
+            "evidence_ok": False,
+        },
+    )
+    contract.assess_case(case_id)
+
+    s = contract.get_settlement(case_id)
+    assert s["status"] == "REVIEW"
+    assert s["outcome"] == "REVIEW"
+    assert s["damage_class"] == "INSUFFICIENT_EVIDENCE"
+    assert s["deduction"] == 0
+    assert s["tenant_refund"] == DEPOSIT_AMOUNT
+
+
+def test_empty_evidence_fails_closed(direct_vm, direct_deploy, direct_owner):
+    """URLs resolve but carry no content -> REVIEW via the mechanical gate."""
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    direct_vm.mock_web(r".*move-in\.html$", {"status": 200, "body": ""})
+    direct_vm.mock_web(r".*move-out\.html$", {"status": 200, "body": "   "})
+
+    contract.assess_case(case_id)
+
+    s = contract.get_settlement(case_id)
+    assert s["status"] == "REVIEW"
+    assert s["deduction"] == 0
+    assert s["evidence_ok"] is False
+
+
+def test_invalid_model_output_fails_closed(direct_vm, direct_deploy, direct_owner):
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(direct_vm, {"damage_class": "NO_DAMAGE", "cost_band_bps": 0, "evidence_ok": True})
+    direct_vm.clear_mocks()
+    direct_vm.mock_web(r".*move-in\.html$", {"status": 200, "body": "ok"})
+    direct_vm.mock_web(r".*move-out\.html$", {"status": 200, "body": "ok"})
+    direct_vm.mock_llm(r"You are an independent evidence assessor.*", "this is not json")
+
+    contract.assess_case(case_id)
+
+    s = contract.get_settlement(case_id)
+    assert s["status"] == "REVIEW"
+    assert s["deduction"] == 0
+
+
+def test_unsupported_damage_class_fails_closed(direct_vm, direct_deploy, direct_owner):
+    """An invented damage class can never reach the settlement math."""
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "TOTAL_DESTRUCTION", "cost_band_bps": 5000, "evidence_ok": True},
+    )
+    contract.assess_case(case_id)
+
+    s = contract.get_settlement(case_id)
+    assert s["status"] == "REVIEW"
+    assert s["deduction"] == 0
+    assert s["evidence_ok"] is False
+
+
+def test_out_of_range_band_fails_closed(direct_vm, direct_deploy, direct_owner):
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(
+        direct_vm,
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 25_000, "evidence_ok": True},
+    )
+    contract.assess_case(case_id)
+
+    s = contract.get_settlement(case_id)
+    assert s["status"] == "REVIEW"
+    assert s["deduction"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Replay / state protection
+# ---------------------------------------------------------------------------
+
+
+def test_case_cannot_be_assessed_twice(direct_vm, direct_deploy, direct_owner):
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    register_case_mocks(direct_vm, clean_assessment())
+    contract.assess_case(case_id)
+
+    with direct_vm.expect_revert("case is not open for assessment"):
+        contract.assess_case(case_id)
+
+
+def test_review_case_cannot_be_reassessed(direct_vm, direct_deploy, direct_owner):
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+    case_id = create_case(contract)
+
+    # Unreachable move-out evidence -> REVIEW (terminal).
+    direct_vm.mock_web(r".*move-in\.html$", {"status": 200, "body": "move-in ok"})
+    contract.assess_case(case_id)
+    assert contract.get_settlement(case_id)["status"] == "REVIEW"
+
+    with direct_vm.expect_revert("case is not open for assessment"):
+        contract.assess_case(case_id)
+
+
+def test_assess_unknown_case_reverts(direct_vm, direct_deploy, direct_owner):
+    direct_vm.sender = direct_owner
+    contract = direct_deploy("contracts/deposit_split.py")
+
+    with direct_vm.expect_revert("case does not exist"):
+        contract.assess_case(999)
