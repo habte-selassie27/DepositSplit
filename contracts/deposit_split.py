@@ -218,3 +218,114 @@ def _derive_settlement(
         "tenant_refund": int(deposit_amount) - deduction,
     }
 
+
+# --------------------------------------------------------------------------
+# Storage
+# --------------------------------------------------------------------------
+
+
+@allow_storage
+@dataclass
+class Case:
+    tenant: str
+    landlord: str
+    inventory_hash: str
+    created_by: str
+    move_in_urls: DynArray[str]
+    move_out_urls: DynArray[str]
+    deposit_amount: u256
+    max_deduction_bps: u256
+    status: str
+    outcome: str
+    damage_class: str
+    cost_band_bps: u256
+    deduction: u256
+    tenant_refund: u256
+    evidence_ok: bool
+    assessment: str
+
+
+class DepositSplit(gl.Contract):
+    """
+    Tenancy deposit arbiter primitive.
+
+    State machine per case:
+        OPEN --assess_case() with consensus--> RESOLVED  (settlement derived)
+        OPEN --assess_case() w/o evidence  --> REVIEW    (fail-closed)
+        OPEN --consensus disagreement------> (tx reverts; stays OPEN)
+    RESOLVED and REVIEW are terminal: the case can never be re-assessed.
+    """
+
+    cases: TreeMap[u256, Case]
+    case_count: u256
+
+    def __init__(self):
+        self.case_count = 0
+
+    # ------------------------------------------------------------------
+    # Case creation (deterministic — no non-deterministic calls here)
+    # ------------------------------------------------------------------
+
+    @gl.public.write
+    def create_case(
+        self,
+        tenant: str,
+        landlord: str,
+        inventory_hash: str,
+        move_in_urls: list[str],
+        move_out_urls: list[str],
+        deposit_amount: int,
+        max_deduction_bps: int,
+    ) -> int:
+        """
+        Register a deposit case. Evidence is stored as URL *references*;
+        the assessment is performed later, by validators, inside consensus.
+        The caller has no way to hint the outcome.
+        """
+        if not tenant or not landlord:
+            raise gl.vm.UserError("tenant and landlord are required")
+        if not inventory_hash:
+            raise gl.vm.UserError("inventory_hash is required")
+        if deposit_amount <= 0:
+            raise gl.vm.UserError("deposit_amount must be positive")
+        if max_deduction_bps < 0 or max_deduction_bps > MAX_BPS:
+            raise gl.vm.UserError("max_deduction_bps must be between 0 and 10000")
+        if (
+            len(move_in_urls) == 0
+            or len(move_out_urls) == 0
+            or len(move_in_urls) > MAX_URLS_PER_STAGE
+            or len(move_out_urls) > MAX_URLS_PER_STAGE
+        ):
+            raise gl.vm.UserError(
+                "1..8 URLs are required for each of move-in and move-out evidence"
+            )
+        for url in list(move_in_urls) + list(move_out_urls):
+            if not isinstance(url, str) or not (
+                url.startswith("http://") or url.startswith("https://")
+            ):
+                raise gl.vm.UserError("evidence URLs must be http(s) URLs")
+
+        case_id = self.case_count
+        self.case_count = self.case_count + 1
+
+        # DynArray fields accept plain sequences from the storage layer.
+        self.cases[case_id] = Case(
+            tenant=tenant,
+            landlord=landlord,
+            inventory_hash=inventory_hash,
+            created_by=gl.message.sender_address.as_hex,
+            move_in_urls=list(move_in_urls),
+            move_out_urls=list(move_out_urls),
+            deposit_amount=u256(deposit_amount),
+            max_deduction_bps=u256(max_deduction_bps),
+            status=STATUS_OPEN,
+            outcome="",
+            damage_class="",
+            cost_band_bps=u256(0),
+            deduction=u256(0),
+            tenant_refund=u256(0),
+            evidence_ok=False,
+            assessment="",
+        )
+
+        return int(case_id)
