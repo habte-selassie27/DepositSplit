@@ -1,4 +1,8 @@
-# DepositSplit — Tenancy Deposit Arbiter
+<p align="center">
+  <img src="Images/logo.png" alt="DepositSplit Logo" width="240">
+</p>
+
+<h1 align="center">DepositSplit — Tenancy Deposit Arbiter</h1>
 
 A reusable **GenLayer Intelligent Contract primitive** for resolving tenancy
 deposit disputes from independently verified evidence.
