@@ -4,30 +4,37 @@
 
 <h1 align="center">DepositSplit — Tenancy Deposit Arbiter</h1>
 
-A reusable **GenLayer Intelligent Contract primitive** for resolving tenancy
-deposit disputes from independently verified evidence.
+**Trustless tenancy deposit dispute resolution powered by GenLayer.**
 
-> Independent validators re-fetch tenancy evidence, reach consensus on a
-> normalized damage classification and cost band, and deterministic contract
-> code derives the deposit settlement. Ambiguous or unavailable evidence
-> fails closed.
+- **No caller-controlled verdict:** `assess_case(case_id)` accepts only the case ID — never a verdict, classification, cost band, or deduction.
+- **Independent verification:** Validators re-fetch move-in/move-out evidence URLs inside `gl.vm.run_nondet`.
+- **LLM consensus:** Validators agree on damage class + cost band: `NO_DAMAGE` · `NORMAL_WEAR` · `MINOR_DAMAGE` · `MAJOR_DAMAGE` · `INSUFFICIENT_EVIDENCE`
+- **Deterministic settlement:** Contract code derives `FULL_REFUND`, `DEDUCT`, `FORFEIT`, or `REVIEW`.
+- **Fail-closed:** Broken URLs, empty evidence, invalid outputs, out-of-range values, or consensus disagreement → `REVIEW`, **never an automatic deduction**.
+- **Live test:** `MINOR_DAMAGE → DEDUCT → 15,000/100,000 → 85,000 refund`
 
-Status: `genvm-lint` passing · 61/61 direct-mode tests passing · deployed on
-studionet at `0x6C435f02C36302a6ca53Ddf55f1981E05f61b536`.
+## Links
+
+| Item | URL |
+| ---- | --- |
+| GenLayer Explorer | [explorer-studio.genlayer.com/address/0x6a259...695D8](https://explorer-studio.genlayer.com/address/0x6a259e52F34a1BdDf1FEbE731Bb0353d734695D8) |
+| GenLayer Studio | [studio.genlayer.com/run-debug](https://studio.genlayer.com/run-debug) |
+| Evidence Host | [evidence-host.vercel.app](https://evidence-host.vercel.app) |
+| GitHub | [github.com/habte-selassie27/DepositSplit](https://github.com/habte-selassie27/DepositSplit) |
 
 ## Live deployment
 
 | Item | Value |
 | ---- | ----- |
 | Network | studionet (`https://studio.genlayer.com/api`, chain 61999) |
-| Contract | `0x6C435f02C36302a6ca53Ddf55f1981E05f61b536` |
-| Deploy tx | `0x34c6603603064447a5cfd2199fe1f88f01f9a4c8a6b5070ce7b1b9ede693c355` |
-| Consensus | `MAJORITY_AGREE` (4 agree, 1 idle) |
+| Contract | `0x6a259e52F34a1BdDf1FEbE731Bb0353d734695D8` |
+| Deploy tx | `0x47144afac7a30684251f9b37496c9afa8c22e1e5aa980053a67b6e11f91169ca` |
+| Consensus | `MAJORITY_AGREE` (5/5 accepted) |
 
 Read-only check:
 
 ```shell
-genlayer call 0x6C435f02C36302a6ca53Ddf55f1981E05f61b536 get_case_count
+genlayer call 0x6a259e52F34a1BdDf1FEbE731Bb0353d734695D8 get_case_count
 ```
 
 ## Live test walkthrough
@@ -49,7 +56,7 @@ fetch during consensus.
 
 ![Move-Out Condition Report](Images/03-move-out-damage-report.png)
 
-### CLI: create case + assess + read settlement
+### CLI: lint + test + deploy + assess + read settlement
 
 Set network to studionet:
 
@@ -59,33 +66,56 @@ genlayer network set studionet
 
 ![Network set to studionet](Images/04-network-set.png)
 
-Create the case with the Vercel evidence URLs:
+Lint the contract:
 
 ```shell
-genlayer write 0x6C435f02C36302a6ca53Ddf55f1981E05f61b536 create_case --args "Tenant Alice" "Landlord Bob" "inventory-hash-demo" '["https://evidence-host.vercel.app/move-in.html"]' '["https://evidence-host.vercel.app/move-out-damage.html"]' 100000 10000
+genvm-lint check contracts/deposit_split.py
 ```
 
-![create_case tx](Images/05-create-case.png)
-![Consensus — 5 agree](Images/06-create-case-consensus.png)
-![Case created, id 2](Images/07-create-case-result.png)
+![Lint passed](Images/05-genvm-lint-passed.png)
+
+Run the test suite (61 tests):
+
+```shell
+PYTHONPATH=. pytest tests/direct/ -v
+```
+
+![Test suite — 61 passed (part 1)](Images/06-test-suite-part1.png)
+![Test suite — 61 passed (part 2)](Images/07-test-suite-part2.png)
+
+Read the current case count:
+
+```shell
+genlayer call 0x6a259e52F34a1BdDf1FEbE731Bb0353d734695D8 get_case_count
+```
+
+![Case count: 0](Images/08-get-case-count.png)
+
+Create a case with Vercel evidence URLs:
+
+```shell
+genlayer write 0x6a259e52F34a1BdDf1FEbE731Bb0353d734695D8 create_case --args "Tenant Alice" "Landlord Bob" "inventory-hash-demo" '["https://evidence-host.vercel.app/move-in.html"]' '["https://evidence-host.vercel.app/move-out-damage.html"]' 100000 10000
+```
+
+![create_case tx](Images/09-create-case-tx.png)
+![Consensus — MAJORITY_AGREE, ACCEPTED](Images/10-create-case-consensus.png)
 
 Run the assessment — validators independently re-fetch the evidence:
 
 ```shell
-genlayer write 0x6C435f02C36302a6ca53Ddf55f1981E05f61b536 assess_case --args 2
+genlayer write 0x6a259e52F34a1BdDf1FEbE731Bb0353d734695D8 assess_case --args 0
 ```
 
-![assess_case tx](Images/08-assess-case.png)
-![Consensus — MAJORITY_AGREE](Images/09-assess-case-consensus.png)
-![Assessment accepted](Images/10-assess-case-result.png)
+![assess_case tx](Images/11-assess-case-tx.png)
+![Consensus — MAJORITY_AGREE, ACCEPTED](Images/12-assess-case-consensus.png)
 
 Read the settlement:
 
 ```shell
-genlayer call 0x6C435f02C36302a6ca53Ddf55f1981E05f61b536 get_settlement --args 2
+genlayer call 0x6a259e52F34a1BdDf1FEbE731Bb0353d734695D8 get_settlement --args 0
 ```
 
-![Settlement: MINOR_DAMAGE, DEDUCT, 15000/100000](Images/11-settlement-result.png)
+![Settlement: MINOR_DAMAGE, DEDUCT, 18000/100000](Images/13-settlement-result.png)
 
 ### Result
 
@@ -93,9 +123,9 @@ genlayer call 0x6C435f02C36302a6ca53Ddf55f1981E05f61b536 get_settlement --args 2
 | --- | --- |
 | outcome | `DEDUCT` |
 | damage_class | `MINOR_DAMAGE` |
-| cost_band_bps | 1500 (15%) |
-| deduction | 15000 of 100000 |
-| tenant_refund | 85000 |
+| cost_band_bps | 1800 (18%) |
+| deduction | 18000 of 100000 |
+| tenant_refund | 82000 |
 | status | `RESOLVED` |
 
 ## What it does
