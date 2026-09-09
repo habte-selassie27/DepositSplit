@@ -11,7 +11,11 @@
 - **LLM consensus:** Validators agree on damage class + cost band: `NO_DAMAGE` · `NORMAL_WEAR` · `MINOR_DAMAGE` · `MAJOR_DAMAGE` · `INSUFFICIENT_EVIDENCE`
 - **Deterministic settlement:** Contract code derives `FULL_REFUND`, `DEDUCT`, `FORFEIT`, or `REVIEW`.
 - **Fail-closed:** Broken URLs, empty evidence, invalid outputs, out-of-range values, or consensus disagreement → `REVIEW`, **never an automatic deduction**.
-- **Live test:** `MINOR_DAMAGE → DEDUCT → 15,000/100,000 → 85,000 refund`
+- **Live test:** `MINOR_DAMAGE → DEDUCT → 18,000/100,000 → 82,000 refund`
+
+**Studionet:** `0x6a259e52F34a1BdDf1FEbE731Bb0353d734695D8`
+
+**Evidence:** [`evidence-host.vercel.app`](https://evidence-host.vercel.app)
 
 ## Links
 
