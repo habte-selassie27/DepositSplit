@@ -391,7 +391,8 @@ def test_validator_rejects_conflicting_classification(direct_vm, direct_deploy, 
     assert direct_vm.run_validator() is False
 
 
-def test_validator_accepts_materially_consistent_band(direct_vm, direct_deploy, direct_owner):
+def test_validator_rejects_any_band_difference(direct_vm, direct_deploy, direct_owner):
+    """Any cost_band_bps difference is rejected — exact match required."""
     direct_vm.sender = direct_owner
     contract = direct_deploy("contracts/deposit_split.py")
     case_id = create_case(contract)
@@ -402,13 +403,13 @@ def test_validator_accepts_materially_consistent_band(direct_vm, direct_deploy, 
     )
     contract.assess_case(case_id)
 
-    # 300 bps apart — within the 500 bps tolerance, same classification.
+    # Even 1 bps apart — no tolerance allowed.
     direct_vm.clear_mocks()
     register_case_mocks(
         direct_vm,
-        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1800, "evidence_ok": True},
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1501, "evidence_ok": True},
     )
-    assert direct_vm.run_validator() is True
+    assert direct_vm.run_validator() is False
 
 
 def test_validator_rejects_materially_different_band(direct_vm, direct_deploy, direct_owner):
@@ -598,8 +599,8 @@ def test_http_error_status_fails_closed(direct_vm, direct_deploy, direct_owner):
     assert s["evidence_ok"] is False
 
 
-def test_boundary_band_exactly_at_tolerance(direct_vm, direct_deploy, direct_owner):
-    """Validator band exactly 500 bps from leader → within tolerance, passes."""
+def test_boundary_band_exactly_matches(direct_vm, direct_deploy, direct_owner):
+    """Validator band exactly matches leader → passes."""
     direct_vm.sender = direct_owner
     contract = direct_deploy("contracts/deposit_split.py")
     case_id = create_case(contract)
@@ -610,17 +611,17 @@ def test_boundary_band_exactly_at_tolerance(direct_vm, direct_deploy, direct_own
     )
     contract.assess_case(case_id)
 
-    # Exactly at tolerance boundary.
+    # Exact match.
     direct_vm.clear_mocks()
     register_case_mocks(
         direct_vm,
-        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 2000, "evidence_ok": True},
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True},
     )
     assert direct_vm.run_validator() is True
 
 
-def test_boundary_band_beyond_tolerance(direct_vm, direct_deploy, direct_owner):
-    """Validator band 501 bps from leader → just outside tolerance, rejected."""
+def test_boundary_band_one_off_rejected(direct_vm, direct_deploy, direct_owner):
+    """Validator band 1 bps from leader → rejected (no tolerance)."""
     direct_vm.sender = direct_owner
     contract = direct_deploy("contracts/deposit_split.py")
     case_id = create_case(contract)
@@ -634,6 +635,6 @@ def test_boundary_band_beyond_tolerance(direct_vm, direct_deploy, direct_owner):
     direct_vm.clear_mocks()
     register_case_mocks(
         direct_vm,
-        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 2001, "evidence_ok": True},
+        {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1501, "evidence_ok": True},
     )
     assert direct_vm.run_validator() is False

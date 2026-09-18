@@ -116,14 +116,15 @@ def test_agree_on_identical_assessments(direct_deploy):
     assert h._assessments_agree(a, dict(a)) is True
 
 
-def test_agree_within_cost_band_tolerance(direct_deploy):
+def test_disagree_on_any_band_difference(direct_deploy):
+    """Even a 1 bps difference is rejected — exact match required."""
     h = load_helpers(direct_deploy)
     leader = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True}
-    validator = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1800, "evidence_ok": True}
-    assert h._assessments_agree(leader, validator) is True
+    validator = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1501, "evidence_ok": True}
+    assert h._assessments_agree(leader, validator) is False
 
 
-def test_disagree_beyond_cost_band_tolerance(direct_deploy):
+def test_disagree_on_different_band(direct_deploy):
     h = load_helpers(direct_deploy)
     leader = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 1500, "evidence_ok": True}
     validator = {"damage_class": "MINOR_DAMAGE", "cost_band_bps": 2500, "evidence_ok": True}

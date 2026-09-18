@@ -69,11 +69,13 @@ Implemented explicitly in `validator_fn` (contract code, not an LLM judge):
 | -------------- | -------------------------------------- | ------------------------------------------ |
 | `damage_class` | must match **exactly**                 | the factual finding must be identical       |
 | `evidence_ok`  | must match **exactly**                 | evidence verifiability is binary            |
-| `cost_band_bps`| within **500 bps** tolerance           | subjective cost estimates vary slightly; materially consistent is enough |
+| `cost_band_bps`| must match **exactly**                   | the band drives settlement; any deviation means validators consent to different payouts |
 
 If any rule fails, the validator votes against the leader and consensus
 disagrees. The final band used is the leader's (already consensus-bounded
-by the cap and by the "normal wear ⇒ 0" rule in normalization).
+by the cap and by the "normal wear ⇒ 0" rule in normalization). Because
+the band must match exactly, validators cannot agree while supporting
+materially different payouts.
 
 ## Deterministic settlement
 

@@ -14,7 +14,7 @@ Architecture in one paragraph:
     assessment. Each validator independently re-fetches and re-evaluates
     the same evidence and compares its result with the leader's under an
     explicit semantic equivalence rule (same damage class, same
-    evidence_ok, cost band within a fixed tolerance). Only after consensus
+    evidence_ok, exact cost band match). Only after consensus
     does deterministic contract code derive the settlement. Anything
     ambiguous, unavailable, or malformed fails closed into REVIEW — it can
     never produce an arbitrary deduction.
@@ -73,10 +73,10 @@ DEDUCTIBLE_DAMAGE_CLASSES = (DAMAGE_MINOR, DAMAGE_MAJOR)
 # Basis points: 10000 == 100%.
 MAX_BPS = 10000
 
-# How far the validator's cost band may deviate from the leader's while
-# still counting as "materially consistent". Damage classification itself
-# must match exactly.
-COST_BAND_TOLERANCE_BPS = 500
+# Validators must agree on the EXACT cost band. No tolerance is allowed:
+# the leader's band is used directly for settlement, so any deviation
+# would mean validators consent to different payouts.
+COST_BAND_TOLERANCE_BPS = 0
 
 # Bounded evidence input.
 MAX_URLS_PER_STAGE = 8
@@ -166,7 +166,7 @@ def _assessments_agree(leader: dict, validator: dict) -> bool:
 
     - damage_class must match exactly (semantic agreement on facts).
     - evidence_ok must match exactly.
-    - cost_band_bps must be materially consistent (within tolerance).
+    - cost_band_bps must match exactly (the band drives settlement).
 
     Returns True only when the two independent evaluations describe the
     same reality.

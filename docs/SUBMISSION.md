@@ -41,8 +41,8 @@ the consensus result.
    `gl.nondet.exec_prompt(prompt, response_format="json")`.
 4. Validators re-fetch and re-evaluate independently; `validator_fn`
    enforces semantic equivalence in explicit Python: exact
-   `damage_class` match, exact `evidence_ok` match, cost band within
-   500 bps (`_assessments_agree`).
+   `damage_class` match, exact `evidence_ok` match, exact
+   `cost_band_bps` match (`_assessments_agree`).
 5. Normalization (`_normalize_assessment`) is strict — unknown classes,
    out-of-range bands, or malformed output become
    `INSUFFICIENT_EVIDENCE` (fail closed), never a deduction.
